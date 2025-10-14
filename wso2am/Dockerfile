@@ -3,9 +3,16 @@ FROM wso2/wso2am:4.5.0
 # Copy PostgreSQL JDBC driver
 COPY --chown=wso2carbon:wso2 lib/postgresql-42.7.4.jar /home/wso2carbon/wso2am-4.5.0/repository/components/lib/
 
-# Copy deployment.toml with hardcoded values
-COPY --chown=wso2carbon:wso2 repository/conf/deployment.toml /home/wso2carbon/wso2am-4.5.0/repository/conf/deployment.toml
+# Copy custom configuration
+COPY --chown=wso2carbon:wso2 conf/ /home/wso2carbon/wso2am-4.5.0/repository/conf/
 
+# Expose required ports
+# 9443: Management Console, Publisher, Developer Portal (HTTPS)
+# 8280: API Gateway HTTP
+# 8243: API Gateway HTTPS
+# 9999: JMX RMI Registry Port
+# 11111: JMX RMI Server Port
+# 5005: Debug Port
 EXPOSE 9443 8280 8243 9999 11111 5005
 
 # Health check
