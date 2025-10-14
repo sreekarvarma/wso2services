@@ -3,13 +3,17 @@ FROM wso2/wso2is:7.1.0
 # Copy PostgreSQL JDBC driver
 COPY --chown=wso2carbon:wso2 lib/postgresql-42.7.4.jar /home/wso2carbon/wso2is-7.1.0/repository/components/lib/
 
-# Copy APIM notification event handler for token revocation
-COPY --chown=wso2carbon:wso2 repository/components/dropins/wso2is.notification.event.handlers-2.0.8.jar /home/wso2carbon/wso2is-7.1.0/repository/components/dropins/
+# Copy only custom deployment.toml (other configs come from base image)
+COPY --chown=wso2carbon:wso2 conf/deployment.toml /home/wso2carbon/wso2is-7.1.0/repository/conf/deployment.toml
 
-# Copy deployment.toml with hardcoded values
-COPY --chown=wso2carbon:wso2 repository/conf/deployment.toml /home/wso2carbon/wso2is-7.1.0/repository/conf/deployment.toml
+# Copy custom webapps if any exist (uncomment and add your WAR files to deployment/server/webapps/)
+# COPY --chown=wso2carbon:wso2 deployment/server/webapps/*.war /home/wso2carbon/wso2is-7.1.0/repository/deployment/server/webapps/
 
-EXPOSE 9443 9763 5005
+# Expose required ports
+# 9443: Management Console (HTTPS)
+# 9763: HTTP
+# 4000: Debug Port
+EXPOSE 9443 9763 4000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --retries=5 \
