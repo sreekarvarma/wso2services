@@ -653,7 +653,7 @@ cmd_list_apps() {
 cmd_create_app() {
     local app_name=${1:-}
     local callback_url=${2:-"http://localhost:8080/callback"}
-    
+
     if [ -z "${app_name}" ]; then
         log_error "Usage: $0 create-app <app_name> [callback_url]"
         echo ""
@@ -661,24 +661,64 @@ cmd_create_app() {
         echo "  $0 create-app MyTestApp http://localhost:8080/callback"
         return 1
     fi
-    
+
     # Validate inputs
     validate_app_name "${app_name}" || return 1
     validate_url "${callback_url}" || return 1
-    
+
     # Check if WSO2 IS container is running
     check_container "wso2is" || return 1
-    
+
     echo ""
     echo "=========================================="
     echo "  Create OAuth2/OIDC Application"
     echo "=========================================="
     echo ""
-    
+
     local app_api="https://localhost:${WSO2IS_EXTERNAL_PORT}/api/server/v1/applications"
-    
+
+    # Preflight check: Verify API connectivity
+    log_info "Checking WSO2 IS API connectivity..."
+    local preflight_code
+    preflight_code=$(curl -k -sS -o /dev/null -w "%{http_code}" \
+        -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
+        "${app_api}?limit=1" 2>/dev/null || echo "000")
+
+    if [ "${preflight_code}" = "000" ]; then
+        log_error "Cannot connect to WSO2 IS API"
+        echo ""
+        echo "Troubleshooting steps:"
+        echo "  1. Check if WSO2 IS container is running:"
+        echo "     docker ps | grep wso2is"
+        echo "  2. Check WSO2 IS logs:"
+        echo "     docker logs wso2is --tail 50"
+        echo "  3. Verify WSO2 IS is listening on port ${WSO2IS_EXTERNAL_PORT}:"
+        echo "     curl -k https://localhost:${WSO2IS_EXTERNAL_PORT}/carbon/admin/login.jsp"
+        echo ""
+        return 1
+    elif [ "${preflight_code}" = "401" ]; then
+        log_error "Authentication failed - Invalid credentials"
+        echo ""
+        echo "Current credentials:"
+        echo "  Username: ${WSO2IS_ADMIN_USER}"
+        echo "  Password: ${WSO2IS_ADMIN_PASS}"
+        echo ""
+        echo "Fix:"
+        echo "  1. Verify admin credentials in WSO2 IS"
+        echo "  2. Or set environment variables:"
+        echo "     export WSO2IS_ADMIN_USER=your_username"
+        echo "     export WSO2IS_ADMIN_PASS=your_password"
+        echo ""
+        return 1
+    elif [ "${preflight_code}" != "200" ]; then
+        log_warn "API returned unexpected status: ${preflight_code}"
+        echo ""
+    fi
+
+    log_success "API connectivity OK"
+
     log_info "Creating application '${app_name}'..."
-    
+
     # Create application payload with OIDC configuration and all grant types
     local payload
     read -r -d '' payload <<EOF || true
@@ -726,29 +766,51 @@ cmd_create_app() {
   }
 }
 EOF
-    
-    local response
-    response=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
+
+    # Make the request and capture both response and HTTP code
+    local temp_response="/tmp/wso2_create_app_response_$$.json"
+    local http_code
+    http_code=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
         -H "Content-Type: application/json" \
         -d "${payload}" \
-        -X POST "${app_api}" 2>&1)
-    
-    if echo "${response}" | grep -q '"id"'; then
+        -w "%{http_code}" \
+        -o "${temp_response}" \
+        -X POST "${app_api}" 2>/dev/null || echo "000")
+
+    local response
+    response=$(cat "${temp_response}" 2>/dev/null || echo "{}")
+    rm -f "${temp_response}"
+
+    # Handle different HTTP status codes
+    if [ "${http_code}" = "201" ]; then
         local app_id
-        app_id=$(echo "${response}" | jq -r '.id' 2>/dev/null)
+        app_id=$(echo "${response}" | jq -r '.id // empty' 2>/dev/null)
+
+        if [ -z "${app_id}" ]; then
+            log_error "Application created but no ID returned"
+            echo "${response}" | python3 -m json.tool 2>/dev/null || echo "${response}"
+            return 1
+        fi
+
         log_success "Application '${app_name}' created successfully"
         echo ""
         log_info "Application ID: ${app_id}"
-        
+
         # Fetch full details including client credentials
         log_info "Fetching application details..."
         local details
         details=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
             "${app_api}/${app_id}" 2>/dev/null)
-        
-        local client_id=$(echo "${details}" | grep -o '"clientId":"[^"]*' | cut -d'"' -f4)
-        local client_secret=$(echo "${details}" | grep -o '"clientSecret":"[^"]*' | cut -d'"' -f4)
-        
+
+        local client_id=$(echo "${details}" | jq -r '.inboundProtocolConfiguration.oidc.clientId // empty' 2>/dev/null)
+        local client_secret=$(echo "${details}" | jq -r '.inboundProtocolConfiguration.oidc.clientSecret // empty' 2>/dev/null)
+
+        if [ -z "${client_id}" ]; then
+            log_warn "Could not extract credentials using jq, trying grep..."
+            client_id=$(echo "${details}" | grep -o '"clientId":"[^"]*' | cut -d'"' -f4)
+            client_secret=$(echo "${details}" | grep -o '"clientSecret":"[^"]*' | cut -d'"' -f4)
+        fi
+
         echo ""
         echo "╔══════════════════════════════════════════════════════════╗"
         echo "║  SAVE THESE CREDENTIALS - THEY WON'T BE SHOWN AGAIN     ║"
@@ -774,9 +836,128 @@ EOF
         echo "  ./wso2-toolkit.sh get-token cc ${client_id} ${client_secret}"
         echo ""
         return 0
+
+    elif [ "${http_code}" = "409" ]; then
+        log_error "Application '${app_name}' already exists"
+        echo ""
+        echo "An application with this name already exists in WSO2 IS."
+        echo ""
+        echo "Options:"
+        echo "  1. Use a different name:"
+        echo "     $0 create-app ${app_name}_2 ${callback_url}"
+        echo ""
+        echo "  2. List existing applications:"
+        echo "     $0 list-apps"
+        echo ""
+        echo "  3. Get credentials for existing app:"
+        echo "     $0 get-credentials ${app_name}"
+        echo ""
+
+        # Try to extract error details
+        local error_msg
+        error_msg=$(echo "${response}" | jq -r '.description // .message // empty' 2>/dev/null)
+        if [ -n "${error_msg}" ]; then
+            echo "Error details: ${error_msg}"
+            echo ""
+        fi
+        return 1
+
+    elif [ "${http_code}" = "401" ]; then
+        log_error "Authentication failed"
+        echo ""
+        echo "Invalid credentials for WSO2 IS API."
+        echo ""
+        echo "Current credentials:"
+        echo "  Username: ${WSO2IS_ADMIN_USER}"
+        echo "  Password: ${WSO2IS_ADMIN_PASS}"
+        echo ""
+        echo "Fix:"
+        echo "  export WSO2IS_ADMIN_USER=your_username"
+        echo "  export WSO2IS_ADMIN_PASS=your_password"
+        echo ""
+        return 1
+
+    elif [ "${http_code}" = "400" ]; then
+        log_error "Bad request - Invalid application configuration"
+        echo ""
+
+        # Parse error details
+        local error_code
+        local error_msg
+        local error_desc
+        error_code=$(echo "${response}" | jq -r '.code // empty' 2>/dev/null)
+        error_msg=$(echo "${response}" | jq -r '.message // empty' 2>/dev/null)
+        error_desc=$(echo "${response}" | jq -r '.description // empty' 2>/dev/null)
+
+        if [ -n "${error_code}" ]; then
+            echo "Error Code: ${error_code}"
+        fi
+        if [ -n "${error_msg}" ]; then
+            echo "Message: ${error_msg}"
+        fi
+        if [ -n "${error_desc}" ]; then
+            echo "Description: ${error_desc}"
+        fi
+
+        # Show full response if jq parsing failed
+        if [ -z "${error_msg}" ]; then
+            echo "Full error response:"
+            echo "${response}" | python3 -m json.tool 2>/dev/null || echo "${response}"
+        fi
+
+        echo ""
+        echo "Common causes:"
+        echo "  • Invalid callback URL format"
+        echo "  • Invalid grant type configuration"
+        echo "  • Invalid application name (special characters)"
+        echo "  • WSO2 IS configuration issue"
+        echo ""
+        return 1
+
+    elif [ "${http_code}" = "000" ]; then
+        log_error "Connection failed - Could not reach WSO2 IS"
+        echo ""
+        echo "Unable to connect to WSO2 IS API at:"
+        echo "  ${app_api}"
+        echo ""
+        echo "Troubleshooting:"
+        echo "  1. Check if WSO2 IS container is running:"
+        echo "     docker ps | grep wso2is"
+        echo ""
+        echo "  2. Check WSO2 IS container logs:"
+        echo "     docker logs wso2is --tail 50"
+        echo ""
+        echo "  3. Restart WSO2 IS if needed:"
+        echo "     docker restart wso2is"
+        echo ""
+        echo "  4. Check port mapping:"
+        echo "     docker port wso2is"
+        echo ""
+        return 1
+
     else
-        log_error "Failed to create application"
-        echo "${response}"
+        log_error "Unexpected HTTP status: ${http_code}"
+        echo ""
+        echo "Received unexpected response from WSO2 IS API."
+        echo ""
+        echo "HTTP Status: ${http_code}"
+        echo ""
+
+        # Try to parse error details
+        local error_msg
+        error_msg=$(echo "${response}" | jq -r '.message // .description // empty' 2>/dev/null)
+
+        if [ -n "${error_msg}" ]; then
+            echo "Error: ${error_msg}"
+        else
+            echo "Full response:"
+            echo "${response}" | python3 -m json.tool 2>/dev/null || echo "${response}"
+        fi
+
+        echo ""
+        echo "If this persists, check WSO2 IS logs:"
+        echo "  docker logs wso2is --tail 100"
+        echo ""
         return 1
     fi
 }
