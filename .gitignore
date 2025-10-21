@@ -1,0 +1,36 @@
+# Environment variables with sensitive data
+.env
+.claude
+
+# WSO2 volumes - these are extracted from containers
+wso2am/conf/
+wso2am/deployment/
+wso2am/logs/
+wso2am/tenants/
+wso2is/conf/
+wso2is/deployment/
+wso2is/logs/
+wso2is/tenants/
+
+# Docker volumes
+postgres-data/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
