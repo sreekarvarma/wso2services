@@ -415,7 +415,7 @@ AM and IS have different user/registry schemas—separating avoids conflicts.
 
 ### Microservices Architecture
 
-The platform includes 6 FastAPI-based microservices:
+The platform includes 7 FastAPI-based microservices:
 
 | Service | Port | Description | Key Features |
 |---------|------|-------------|-------------|
@@ -425,6 +425,7 @@ The platform includes 6 FastAPI-based microservices:
 | **profile-service** | 8004 | User profiles & KYC | Identity verification, compliance |
 | **rule-engine-service** | 8005 | Business rules | Risk scoring, compliance checks |
 | **wallet-service** | 8006 | Digital wallets | Balance management, transactions |
+| **banking-service** | 8007 | Bank account linking | Mastercard Open Finance, 16,000+ banks |
 
 ### Technology Stack
 
@@ -464,7 +465,47 @@ Each service provides auto-generated API documentation:
 - **ReDoc**: `http://localhost:800X/redoc`
 - **OpenAPI JSON**: `http://localhost:800X/openapi.json`
 
-(Replace `X` with service port number 1-6)
+(Replace `X` with service port number 1-7)
+
+### Banking Service Integration
+
+The **banking-service** (port 8007) enables secure bank account linking via **Mastercard Open Finance API**:
+
+#### Features
+- 🏦 Connect to 16,000+ US financial institutions
+- 🔐 OAuth 2.0 secure authentication
+- 💰 Real-time balance verification
+- ✅ Account validation for FX/remittance transfers
+
+#### Quick Start
+
+```bash
+# 1. Add Mastercard credentials to .env
+MASTERCARD_PARTNER_ID=your_partner_id
+MASTERCARD_PARTNER_SECRET=your_secret
+MASTERCARD_APP_KEY=your_app_key
+
+# 2. Start service
+docker compose up -d banking-service
+
+# 3. Access API docs
+open http://localhost:8007/docs
+```
+
+#### Key Endpoints
+
+- `POST /api/v1/{user_id}/bank-accounts/connect` - Generate OAuth Connect URL
+- `GET /api/v1/{user_id}/bank-accounts/callback` - Handle OAuth callback
+- `GET /api/v1/{user_id}/bank-accounts` - List linked accounts
+- `POST /api/v1/{user_id}/bank-accounts/{id}/refresh` - Update balance
+- `DELETE /api/v1/{user_id}/bank-accounts/{id}` - Unlink account
+
+#### Database Schema
+
+PostgreSQL (`banking_db`) with 3 tables:
+- `mastercard_customers` - Customer records
+- `linked_bank_accounts` - Connected bank accounts
+- `account_connection_logs` - OAuth connection audit trail
 
 ### Service Dependencies
 
@@ -483,6 +524,11 @@ profile-service
 ├── Depends on: WSO2 Identity Server
 ├── Database: PostgreSQL (profile_db), Redis (DB 3)
 └── Integration: OAuth2/OIDC with WSO2 IS
+
+banking-service
+├── Depends on: Mastercard Open Finance API
+├── Database: PostgreSQL (banking_db), Redis (DB 6)
+└── Integration: OAuth 2.0 with Mastercard
 ```
 
 ## 🔍 Health Checks & Verification
@@ -494,12 +540,15 @@ profile-service
 docker compose ps
 
 # Check specific service health
+```bash
+# Check service health
 curl http://localhost:8001/health  # Forex service
 curl http://localhost:8002/health  # Ledger service
 curl http://localhost:8003/health  # Payment service
 curl http://localhost:8004/health  # Profile service
 curl http://localhost:8005/health  # Rule engine
 curl http://localhost:8006/health  # Wallet service
+curl http://localhost:8007/health  # Banking service
 
 # Check WSO2 services
 curl -k https://localhost:9443/carbon/  # API Manager
@@ -644,9 +693,9 @@ Services use environment variables for configuration (see `docker-compose.yml`):
 
 ---
 
-**Total Service Count:** 14 Services
+**Total Service Count:** 15 Services
 - 2 WSO2 Services (API Manager, Identity Server)
-- 6 Application Services (FastAPI microservices)
+- 7 Application Services (FastAPI microservices)
 - 6 Infrastructure Services (PostgreSQL, Redis, DynamoDB, Redpanda, Jaeger, OTel Collector)
 
 ---

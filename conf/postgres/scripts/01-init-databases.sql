@@ -4,6 +4,9 @@ CREATE DATABASE shared_db;
 CREATE DATABASE shared_db_is;
 CREATE DATABASE identity_db;
 
+-- Create database for Banking Service
+CREATE DATABASE banking_db;
+
 -- Create user for WSO2
 CREATE USER wso2carbon WITH PASSWORD 'wso2carbon';
 
@@ -12,6 +15,7 @@ GRANT ALL PRIVILEGES ON DATABASE apim_db TO wso2carbon;
 GRANT ALL PRIVILEGES ON DATABASE shared_db TO wso2carbon;
 GRANT ALL PRIVILEGES ON DATABASE shared_db_is TO wso2carbon;
 GRANT ALL PRIVILEGES ON DATABASE identity_db TO wso2carbon;
+GRANT ALL PRIVILEGES ON DATABASE banking_db TO wso2carbon;
 
 -- Connect to shared_db and grant schema privileges
 \c shared_db
@@ -36,6 +40,13 @@ ALTER SCHEMA public OWNER TO wso2carbon;
 
 -- Connect to identity_db and grant schema privileges
 \c identity_db
+GRANT ALL ON SCHEMA public TO wso2carbon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO wso2carbon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO wso2carbon;
+ALTER SCHEMA public OWNER TO wso2carbon;
+
+-- Connect to banking_db and grant schema privileges
+\c banking_db
 GRANT ALL ON SCHEMA public TO wso2carbon;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO wso2carbon;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO wso2carbon;
