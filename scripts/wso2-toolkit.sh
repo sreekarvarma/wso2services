@@ -620,25 +620,30 @@ cmd_check_ssa_jwks() {
 }
 
 ################################################################################
-# COMMAND: list-apps - List all OAuth2 applications
+# COMMAND: list-apps - List all applications from APIM DevPortal
 ################################################################################
 
 cmd_list_apps() {
     echo ""
     echo "=========================================="
-    echo "  OAuth2 Applications"
+    echo "  Applications in APIM DevPortal"
     echo "=========================================="
     echo ""
-    
-    local app_api="https://localhost:${WSO2IS_EXTERNAL_PORT}/api/server/v1/applications"
-    
-    log_info "Fetching applications..."
+
+    check_container "wso2am" || return 1
+
+    local app_api="https://${APIM_HOST}:${APIM_PORT}/api/am/devportal/v3/applications"
+
+    log_info "Fetching applications from APIM DevPortal..."
     local response
-    response=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
+    response=$(curl -k -sS -u "${APIM_ADMIN_USER}:${APIM_ADMIN_PASS}" \
         "${app_api}?limit=100" 2>&1)
-    
-    if echo "${response}" | grep -q '"applications"'; then
-        echo "${response}" | python3 -m json.tool 2>/dev/null || echo "${response}"
+
+    if echo "${response}" | grep -q '"list"'; then
+        echo ""
+        echo "${response}" | jq -r '.list[] | "ID: \(.applicationId)\nName: \(.name)\nStatus: \(.status)\nOwner: \(.owner)\nThrottling: \(.throttlingPolicy)\n---"' 2>/dev/null || echo "${response}" | python3 -m json.tool
+        echo ""
+        log_info "Total applications: $(echo "${response}" | jq -r '.count // 0' 2>/dev/null)"
     else
         log_error "Failed to fetch applications"
         echo "${response}"
@@ -647,18 +652,19 @@ cmd_list_apps() {
 }
 
 ################################################################################
-# COMMAND: create-app - Create OAuth2/OIDC application
+# COMMAND: create-app - Create application via APIM DevPortal (2-step flow)
 ################################################################################
 
 cmd_create_app() {
     local app_name=${1:-}
     local callback_url=${2:-"http://localhost:8080/callback"}
+    local key_manager=${3:-"WSO2IS"}
 
     if [ -z "${app_name}" ]; then
-        log_error "Usage: $0 create-app <app_name> [callback_url]"
+        log_error "Usage: $0 create-app <app_name> [callback_url] [key_manager]"
         echo ""
         echo "Example:"
-        echo "  $0 create-app MyTestApp http://localhost:8080/callback"
+        echo "  $0 create-app MyTestApp http://localhost:8080/callback WSO2IS"
         return 1
     fi
 
@@ -666,328 +672,197 @@ cmd_create_app() {
     validate_app_name "${app_name}" || return 1
     validate_url "${callback_url}" || return 1
 
-    # Check if WSO2 IS container is running
-    check_container "wso2is" || return 1
+    # Check if APIM container is running
+    check_container "wso2am" || return 1
 
     echo ""
     echo "=========================================="
-    echo "  Create OAuth2/OIDC Application"
+    echo "  Create Application via APIM DevPortal"
     echo "=========================================="
     echo ""
 
-    local app_api="https://localhost:${WSO2IS_EXTERNAL_PORT}/api/server/v1/applications"
+    local apim_app_api="https://${APIM_HOST}:${APIM_PORT}/api/am/devportal/v3/applications"
 
-    # Preflight check: Verify API connectivity
-    log_info "Checking WSO2 IS API connectivity..."
-    local preflight_code
-    preflight_code=$(curl -k -sS -o /dev/null -w "%{http_code}" \
-        -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
-        "${app_api}?limit=1" 2>/dev/null || echo "000")
+    # Step 1: Create application in APIM
+    log_info "Step 1/2: Creating application '${app_name}' in APIM DevPortal..."
 
-    if [ "${preflight_code}" = "000" ]; then
-        log_error "Cannot connect to WSO2 IS API"
-        echo ""
-        echo "Troubleshooting steps:"
-        echo "  1. Check if WSO2 IS container is running:"
-        echo "     docker ps | grep wso2is"
-        echo "  2. Check WSO2 IS logs:"
-        echo "     docker logs wso2is --tail 50"
-        echo "  3. Verify WSO2 IS is listening on port ${WSO2IS_EXTERNAL_PORT}:"
-        echo "     curl -k https://localhost:${WSO2IS_EXTERNAL_PORT}/carbon/admin/login.jsp"
-        echo ""
-        return 1
-    elif [ "${preflight_code}" = "401" ]; then
-        log_error "Authentication failed - Invalid credentials"
-        echo ""
-        echo "Current credentials:"
-        echo "  Username: ${WSO2IS_ADMIN_USER}"
-        echo "  Password: ${WSO2IS_ADMIN_PASS}"
-        echo ""
-        echo "Fix:"
-        echo "  1. Verify admin credentials in WSO2 IS"
-        echo "  2. Or set environment variables:"
-        echo "     export WSO2IS_ADMIN_USER=your_username"
-        echo "     export WSO2IS_ADMIN_PASS=your_password"
-        echo ""
-        return 1
-    elif [ "${preflight_code}" != "200" ]; then
-        log_warn "API returned unexpected status: ${preflight_code}"
-        echo ""
-    fi
-
-    log_success "API connectivity OK"
-
-    log_info "Creating application '${app_name}'..."
-
-    # Create application payload with OIDC configuration and all grant types
-    local payload
-    read -r -d '' payload <<EOF || true
+    local app_payload
+    read -r -d '' app_payload <<EOF || true
 {
   "name": "${app_name}",
-  "description": "OAuth2/OIDC application created via API",
-  "inboundProtocolConfiguration": {
-    "oidc": {
-      "grantTypes": [
-        "authorization_code",
-        "client_credentials",
-        "password",
-        "refresh_token",
-        "implicit",
-        "urn:ietf:params:oauth:grant-type:device_code",
-        "urn:ietf:params:oauth:grant-type:token-exchange",
-        "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        "urn:ietf:params:oauth:grant-type:saml2-bearer"
-      ],
-      "callbackURLs": ["${callback_url}"],
-      "publicClient": false,
-      "pkce": {
-        "mandatory": false,
-        "supportPlainTransformAlgorithm": true
-      },
-      "accessToken": {
-        "type": "JWT",
-        "userAccessTokenExpiryInSeconds": 3600,
-        "applicationAccessTokenExpiryInSeconds": 3600
-      },
-      "refreshToken": {
-        "expiryInSeconds": 86400,
-        "renewRefreshToken": true
-      },
-      "idToken": {
-        "expiryInSeconds": 3600
-      }
-    }
-  },
-  "advancedConfigurations": {
-    "saas": false,
-    "skipLoginConsent": false,
-    "skipLogoutConsent": false,
-    "enableAuthorization": false
-  }
+  "throttlingPolicy": "Unlimited",
+  "description": "OAuth2/OIDC application created via toolkit",
+  "tokenType": "JWT",
+  "attributes": {}
 }
 EOF
 
-    # Make the request and capture both response and HTTP code
-    local temp_response="/tmp/wso2_create_app_response_$$.json"
+    local temp_response="/tmp/wso2_create_app_$$.json"
     local http_code
-    http_code=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
+    http_code=$(curl -k -sS -u "${APIM_ADMIN_USER}:${APIM_ADMIN_PASS}" \
         -H "Content-Type: application/json" \
-        -d "${payload}" \
+        -d "${app_payload}" \
         -w "%{http_code}" \
         -o "${temp_response}" \
-        -X POST "${app_api}" 2>/dev/null || echo "000")
+        -X POST "${apim_app_api}" 2>/dev/null || echo "000")
 
-    local response
-    response=$(cat "${temp_response}" 2>/dev/null || echo "{}")
-    rm -f "${temp_response}"
+    local app_response
+    app_response=$(cat "${temp_response}" 2>/dev/null || echo "{}")
 
-    # Handle different HTTP status codes
-    if [ "${http_code}" = "201" ]; then
-        local app_id
-        app_id=$(echo "${response}" | jq -r '.id // empty' 2>/dev/null)
-
-        if [ -z "${app_id}" ]; then
-            log_error "Application created but no ID returned"
-            echo "${response}" | python3 -m json.tool 2>/dev/null || echo "${response}"
-            return 1
-        fi
-
-        log_success "Application '${app_name}' created successfully"
+    if [ "${http_code}" != "201" ]; then
+        rm -f "${temp_response}"
+        log_error "Failed to create application in APIM (HTTP ${http_code})"
         echo ""
-        log_info "Application ID: ${app_id}"
-
-        # Fetch full details including client credentials
-        log_info "Fetching application details..."
-        local details
-        details=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
-            "${app_api}/${app_id}" 2>/dev/null)
-
-        local client_id=$(echo "${details}" | jq -r '.inboundProtocolConfiguration.oidc.clientId // empty' 2>/dev/null)
-        local client_secret=$(echo "${details}" | jq -r '.inboundProtocolConfiguration.oidc.clientSecret // empty' 2>/dev/null)
-
-        if [ -z "${client_id}" ]; then
-            log_warn "Could not extract credentials using jq, trying grep..."
-            client_id=$(echo "${details}" | grep -o '"clientId":"[^"]*' | cut -d'"' -f4)
-            client_secret=$(echo "${details}" | grep -o '"clientSecret":"[^"]*' | cut -d'"' -f4)
-        fi
-
-        echo ""
-        echo "╔══════════════════════════════════════════════════════════╗"
-        echo "║  SAVE THESE CREDENTIALS - THEY WON'T BE SHOWN AGAIN     ║"
-        echo "╚══════════════════════════════════════════════════════════╝"
-        echo ""
-        echo "Application Name: ${app_name}"
-        echo "Client ID:        ${client_id}"
-        echo "Client Secret:    ${client_secret}"
-        echo "Callback URL:     ${callback_url}"
-        echo ""
-        echo "Grant Types Enabled:"
-        echo "  ✓ Authorization Code"
-        echo "  ✓ Client Credentials"
-        echo "  ✓ Password"
-        echo "  ✓ Refresh Token"
-        echo "  ✓ Implicit"
-        echo "  ✓ Device Code"
-        echo "  ✓ Token Exchange"
-        echo "  ✓ JWT Bearer"
-        echo "  ✓ SAML2 Bearer"
-        echo ""
-        echo "Test token generation:"
-        echo "  ./wso2-toolkit.sh get-token cc ${client_id} ${client_secret}"
-        echo ""
-        return 0
-
-    elif [ "${http_code}" = "409" ]; then
-        log_error "Application '${app_name}' already exists"
-        echo ""
-        echo "An application with this name already exists in WSO2 IS."
-        echo ""
-        echo "Options:"
-        echo "  1. Use a different name:"
-        echo "     $0 create-app ${app_name}_2 ${callback_url}"
-        echo ""
-        echo "  2. List existing applications:"
-        echo "     $0 list-apps"
-        echo ""
-        echo "  3. Get credentials for existing app:"
-        echo "     $0 get-credentials ${app_name}"
+        echo "${app_response}" | python3 -m json.tool 2>/dev/null || echo "${app_response}"
         echo ""
 
-        # Try to extract error details
-        local error_msg
-        error_msg=$(echo "${response}" | jq -r '.description // .message // empty' 2>/dev/null)
-        if [ -n "${error_msg}" ]; then
-            echo "Error details: ${error_msg}"
+        if [ "${http_code}" = "409" ]; then
+            echo "Application '${app_name}' already exists."
             echo ""
+            echo "Options:"
+            echo "  1. Use a different name"
+            echo "  2. List existing apps: $0 list-apps"
+            echo "  3. Get keys for existing app: $0 get-app-keys <app_id>"
         fi
-        return 1
-
-    elif [ "${http_code}" = "401" ]; then
-        log_error "Authentication failed"
-        echo ""
-        echo "Invalid credentials for WSO2 IS API."
-        echo ""
-        echo "Current credentials:"
-        echo "  Username: ${WSO2IS_ADMIN_USER}"
-        echo "  Password: ${WSO2IS_ADMIN_PASS}"
-        echo ""
-        echo "Fix:"
-        echo "  export WSO2IS_ADMIN_USER=your_username"
-        echo "  export WSO2IS_ADMIN_PASS=your_password"
-        echo ""
-        return 1
-
-    elif [ "${http_code}" = "400" ]; then
-        log_error "Bad request - Invalid application configuration"
-        echo ""
-
-        # Parse error details
-        local error_code
-        local error_msg
-        local error_desc
-        error_code=$(echo "${response}" | jq -r '.code // empty' 2>/dev/null)
-        error_msg=$(echo "${response}" | jq -r '.message // empty' 2>/dev/null)
-        error_desc=$(echo "${response}" | jq -r '.description // empty' 2>/dev/null)
-
-        if [ -n "${error_code}" ]; then
-            echo "Error Code: ${error_code}"
-        fi
-        if [ -n "${error_msg}" ]; then
-            echo "Message: ${error_msg}"
-        fi
-        if [ -n "${error_desc}" ]; then
-            echo "Description: ${error_desc}"
-        fi
-
-        # Show full response if jq parsing failed
-        if [ -z "${error_msg}" ]; then
-            echo "Full error response:"
-            echo "${response}" | python3 -m json.tool 2>/dev/null || echo "${response}"
-        fi
-
-        echo ""
-        echo "Common causes:"
-        echo "  • Invalid callback URL format"
-        echo "  • Invalid grant type configuration"
-        echo "  • Invalid application name (special characters)"
-        echo "  • WSO2 IS configuration issue"
-        echo ""
-        return 1
-
-    elif [ "${http_code}" = "000" ]; then
-        log_error "Connection failed - Could not reach WSO2 IS"
-        echo ""
-        echo "Unable to connect to WSO2 IS API at:"
-        echo "  ${app_api}"
-        echo ""
-        echo "Troubleshooting:"
-        echo "  1. Check if WSO2 IS container is running:"
-        echo "     docker ps | grep wso2is"
-        echo ""
-        echo "  2. Check WSO2 IS container logs:"
-        echo "     docker logs wso2is --tail 50"
-        echo ""
-        echo "  3. Restart WSO2 IS if needed:"
-        echo "     docker restart wso2is"
-        echo ""
-        echo "  4. Check port mapping:"
-        echo "     docker port wso2is"
-        echo ""
-        return 1
-
-    else
-        log_error "Unexpected HTTP status: ${http_code}"
-        echo ""
-        echo "Received unexpected response from WSO2 IS API."
-        echo ""
-        echo "HTTP Status: ${http_code}"
-        echo ""
-
-        # Try to parse error details
-        local error_msg
-        error_msg=$(echo "${response}" | jq -r '.message // .description // empty' 2>/dev/null)
-
-        if [ -n "${error_msg}" ]; then
-            echo "Error: ${error_msg}"
-        else
-            echo "Full response:"
-            echo "${response}" | python3 -m json.tool 2>/dev/null || echo "${response}"
-        fi
-
-        echo ""
-        echo "If this persists, check WSO2 IS logs:"
-        echo "  docker logs wso2is --tail 100"
-        echo ""
         return 1
     fi
+
+    local app_id=$(echo "${app_response}" | jq -r '.applicationId // empty' 2>/dev/null)
+
+    if [ -z "${app_id}" ]; then
+        rm -f "${temp_response}"
+        log_error "Application created but ID not found in response"
+        return 1
+    fi
+
+    log_success "Application created in APIM (ID: ${app_id})"
+    rm -f "${temp_response}"
+
+    # Step 2: Generate keys with WSO2IS Key Manager
+    log_info "Step 2/2: Generating OAuth2 keys with Key Manager '${key_manager}'..."
+
+    local keys_api="${apim_app_api}/${app_id}/generate-keys"
+
+    local keys_payload
+    read -r -d '' keys_payload <<EOF || true
+{
+  "keyType": "PRODUCTION",
+  "keyManager": "${key_manager}",
+  "grantTypesToBeSupported": [
+    "client_credentials",
+    "password",
+    "authorization_code",
+    "refresh_token",
+    "implicit",
+    "urn:ietf:params:oauth:grant-type:device_code",
+    "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    "urn:ietf:params:oauth:grant-type:saml2-bearer",
+    "urn:ietf:params:oauth:grant-type:token-exchange"
+  ],
+  "callbackUrl": "${callback_url}",
+  "scopes": ["default"],
+  "validityTime": 3600,
+  "additionalProperties": {}
+}
+EOF
+
+    local temp_keys="/tmp/wso2_keys_$$.json"
+    http_code=$(curl -k -sS -u "${APIM_ADMIN_USER}:${APIM_ADMIN_PASS}" \
+        -H "Content-Type: application/json" \
+        -d "${keys_payload}" \
+        -w "%{http_code}" \
+        -o "${temp_keys}" \
+        -X POST "${keys_api}" 2>/dev/null || echo "000")
+
+    local keys_response
+    keys_response=$(cat "${temp_keys}" 2>/dev/null || echo "{}")
+
+    if [ "${http_code}" != "200" ]; then
+        rm -f "${temp_keys}"
+        log_error "Failed to generate keys (HTTP ${http_code})"
+        echo ""
+        echo "${keys_response}" | python3 -m json.tool 2>/dev/null || echo "${keys_response}"
+        echo ""
+        echo "Application created (ID: ${app_id}) but key generation failed."
+        echo "You can retry key generation via APIM DevPortal UI."
+        return 1
+    fi
+
+    local consumer_key=$(echo "${keys_response}" | jq -r '.consumerKey // empty' 2>/dev/null)
+    local consumer_secret=$(echo "${keys_response}" | jq -r '.consumerSecret // empty' 2>/dev/null)
+
+    rm -f "${temp_keys}"
+
+    if [ -z "${consumer_key}" ] || [ -z "${consumer_secret}" ]; then
+        log_error "Keys generated but credentials not found in response"
+        return 1
+    fi
+
+    log_success "OAuth2 keys generated successfully!"
+
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║  SAVE THESE CREDENTIALS - THEY WON'T BE SHOWN AGAIN     ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "Application Name: ${app_name}"
+    echo "Application ID:   ${app_id}"
+    echo "Client ID:        ${consumer_key}"
+    echo "Client Secret:    ${consumer_secret}"
+    echo "Callback URL:     ${callback_url}"
+    echo "Key Manager:      ${key_manager}"
+    echo ""
+    echo "Grant Types Enabled:"
+    echo "  ✓ Client Credentials"
+    echo "  ✓ Password"
+    echo "  ✓ Authorization Code"
+    echo "  ✓ Refresh Token"
+    echo "  ✓ Implicit"
+    echo "  ✓ Device Code"
+    echo "  ✓ JWT Bearer"
+    echo "  ✓ SAML2 Bearer"
+    echo "  ✓ Token Exchange"
+    echo ""
+    echo "Test token generation:"
+    echo "  ./wso2-toolkit.sh get-token cc ${consumer_key} ${consumer_secret}"
+    echo ""
+    echo "Access APIM DevPortal:"
+    echo "  https://localhost:${APIM_PORT}/devportal"
+    echo ""
+
+    return 0
 }
 
 ################################################################################
-# COMMAND: get-app - Get application details
+# COMMAND: get-app - Get application details from APIM
 ################################################################################
 
 cmd_get_app() {
     local app_id=${1:-}
-    
+
     if [ -z "${app_id}" ]; then
         log_error "Usage: $0 get-app <application_id>"
+        echo ""
+        echo "Get application ID from: $0 list-apps"
         return 1
     fi
-    
+
+    check_container "wso2am" || return 1
+
     echo ""
     echo "=========================================="
-    echo "  Application Details"
+    echo "  Application Details (APIM)"
     echo "=========================================="
     echo ""
-    
-    local app_api="https://localhost:${WSO2IS_EXTERNAL_PORT}/api/server/v1/applications"
-    
+
+    local app_api="https://${APIM_HOST}:${APIM_PORT}/api/am/devportal/v3/applications"
+
     log_info "Fetching application '${app_id}'..."
     local response
-    response=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
+    response=$(curl -k -sS -u "${APIM_ADMIN_USER}:${APIM_ADMIN_PASS}" \
         "${app_api}/${app_id}" 2>&1)
-    
-    if echo "${response}" | grep -q '"id"'; then
+
+    if echo "${response}" | grep -q '"applicationId"'; then
         echo "${response}" | python3 -m json.tool 2>/dev/null || echo "${response}"
     else
         log_error "Failed to fetch application"
@@ -997,83 +872,59 @@ cmd_get_app() {
 }
 
 ################################################################################
-# COMMAND: get-credentials - Get OAuth2 client credentials
+# COMMAND: get-app-keys - Get application OAuth2 keys from APIM
 ################################################################################
 
-cmd_get_credentials() {
-    local app_name_or_id=${1:-}
-    
-    if [ -z "${app_name_or_id}" ]; then
-        log_error "Usage: $0 get-credentials <app_name_or_id>"
+cmd_get_app_keys() {
+    local app_id=${1:-}
+    local key_type=${2:-PRODUCTION}
+
+    if [ -z "${app_id}" ]; then
+        log_error "Usage: $0 get-app-keys <application_id> [PRODUCTION|SANDBOX]"
         echo ""
-        echo "Examples:"
-        echo "  $0 get-credentials TestApp"
-        echo "  $0 get-credentials 740b2275-260e-4333-b40f-3a495fff4ba2"
+        echo "Get application ID from: $0 list-apps"
         return 1
     fi
-    
+
+    check_container "wso2am" || return 1
+
     echo ""
     echo "=========================================="
-    echo "  Get OAuth2 Credentials"
+    echo "  Application OAuth2 Keys"
     echo "=========================================="
     echo ""
-    
-    local app_api="https://localhost:${WSO2IS_EXTERNAL_PORT}/api/server/v1/applications"
-    
-    # First, try to find app by name if not a UUID
-    local app_id="${app_name_or_id}"
-    if [[ ! "${app_name_or_id}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
-        log_info "Searching for application '${app_name_or_id}'..."
-        local search_result
-        search_result=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
-            "${app_api}?filter=name+eq+${app_name_or_id}" 2>&1)
-        
-        app_id=$(echo "${search_result}" | jq -r '.applications[0].id // empty' 2>/dev/null)
-        
-        if [ -z "${app_id}" ]; then
-            log_error "Application '${app_name_or_id}' not found"
-            echo ""
-            echo "List all applications:"
-            echo "  $0 list-apps"
-            return 1
-        fi
-    fi
-    
-    log_info "Fetching credentials for app ID: ${app_id}..."
-    
-    # Get application details
-    local app_details
-    app_details=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
-        "${app_api}/${app_id}" 2>/dev/null)
-    
-    local app_name=$(echo "${app_details}" | grep -o '"name":"[^"]*' | head -1 | cut -d'"' -f4)
-    
-    # Get OIDC configuration
-    local oidc_config
-    oidc_config=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
-        "${app_api}/${app_id}/inbound-protocols/oidc" 2>/dev/null)
-    
-    if echo "${oidc_config}" | grep -q '"clientId"'; then
-        local client_id=$(echo "${oidc_config}" | grep -o '"clientId":"[^"]*' | cut -d'"' -f4)
-        local client_secret=$(echo "${oidc_config}" | grep -o '"clientSecret":"[^"]*' | cut -d'"' -f4)
-        local callback=$(echo "${oidc_config}" | grep -o '"callbackURLs":\["[^"]*' | cut -d'"' -f4)
-        
+
+    local keys_api="https://${APIM_HOST}:${APIM_PORT}/api/am/devportal/v3/applications/${app_id}/keys/${key_type}"
+
+    log_info "Fetching ${key_type} keys for application ${app_id}..."
+    local response
+    response=$(curl -k -sS -u "${APIM_ADMIN_USER}:${APIM_ADMIN_PASS}" \
+        "${keys_api}" 2>&1)
+
+    if echo "${response}" | grep -q '"consumerKey"'; then
+        local consumer_key=$(echo "${response}" | jq -r '.consumerKey // empty' 2>/dev/null)
+        local consumer_secret=$(echo "${response}" | jq -r '.consumerSecret // empty' 2>/dev/null)
+        local callback=$(echo "${response}" | jq -r '.callbackUrl // empty' 2>/dev/null)
+        local key_manager=$(echo "${response}" | jq -r '.keyManager // empty' 2>/dev/null)
+
         echo ""
         echo "╔══════════════════════════════════════════════════════════╗"
         echo "║               OAuth2 Client Credentials                 ║"
         echo "╚══════════════════════════════════════════════════════════╝"
         echo ""
-        echo "Application:    ${app_name}"
-        echo "Client ID:      ${client_id}"
-        echo "Client Secret:  ${client_secret}"
-        echo "Callback URL:   ${callback}"
+        echo "Application ID:  ${app_id}"
+        echo "Key Type:        ${key_type}"
+        echo "Key Manager:     ${key_manager}"
+        echo "Client ID:       ${consumer_key}"
+        echo "Client Secret:   ${consumer_secret}"
+        echo "Callback URL:    ${callback}"
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "Save to .env file:"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
-        echo "OAUTH2_CLIENT_ID=${client_id}"
-        echo "OAUTH2_CLIENT_SECRET=${client_secret}"
+        echo "OAUTH2_CLIENT_ID=${consumer_key}"
+        echo "OAUTH2_CLIENT_SECRET=${consumer_secret}"
         echo "OAUTH2_TOKEN_URL=https://localhost:9444/oauth2/token"
         echo "OAUTH2_CALLBACK_URL=${callback}"
         echo ""
@@ -1081,54 +932,66 @@ cmd_get_credentials() {
         echo "Test token generation:"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
-        echo "./scripts/wso2-toolkit.sh get-token cc ${client_id} ${client_secret}"
+        echo "./scripts/wso2-toolkit.sh get-token cc ${consumer_key} ${consumer_secret}"
         echo ""
-        
-        # Show grant types
-        local grant_types=$(echo "${oidc_config}" | grep -o '"grantTypes":\[[^]]*\]' | sed 's/"grantTypes":\[//;s/\]//;s/"//g')
+
+        # Show supported grant types
+        local grant_types=$(echo "${response}" | jq -r '.supportedGrantTypes[]? // empty' 2>/dev/null)
         if [ -n "${grant_types}" ]; then
             echo "Grant Types Enabled:"
-            echo "${grant_types}" | tr ',' '\n' | while read -r grant; do
+            echo "${grant_types}" | while read -r grant; do
                 [ -n "$grant" ] && echo "  ✓ ${grant}"
             done
             echo ""
         fi
-        
+
+        echo "Full Key Details:"
+        echo "${response}" | python3 -m json.tool 2>/dev/null
+
         return 0
     else
-        log_error "No OIDC configuration found for this application"
+        log_error "Failed to fetch application keys"
+        echo "${response}"
+        echo ""
+        echo "This application may not have keys generated yet."
+        echo "Generate keys with: $0 create-app <name> <callback_url>"
         return 1
     fi
 }
 
 ################################################################################
-# COMMAND: delete-app - Delete application
+# COMMAND: delete-app - Delete application from APIM
 ################################################################################
 
 cmd_delete_app() {
     local app_id=${1:-}
-    
+
     if [ -z "${app_id}" ]; then
         log_error "Usage: $0 delete-app <application_id>"
+        echo ""
+        echo "Get application ID from: $0 list-apps"
         return 1
     fi
-    
+
+    check_container "wso2am" || return 1
+
     echo ""
     echo "=========================================="
-    echo "  Delete Application"
+    echo "  Delete Application from APIM"
     echo "=========================================="
     echo ""
-    
-    local app_api="https://localhost:${WSO2IS_EXTERNAL_PORT}/api/server/v1/applications"
-    
+
+    local app_api="https://${APIM_HOST}:${APIM_PORT}/api/am/devportal/v3/applications"
+
     log_info "Deleting application '${app_id}'..."
     local http_code
-    http_code=$(curl -k -sS -u "${WSO2IS_ADMIN_USER}:${WSO2IS_ADMIN_PASS}" \
+    http_code=$(curl -k -sS -u "${APIM_ADMIN_USER}:${APIM_ADMIN_PASS}" \
         -o /dev/null -w "%{http_code}" \
         -X DELETE "${app_api}/${app_id}" 2>&1)
-    
-    if [ "${http_code}" = "204" ]; then
-        log_success "Application deleted successfully"
+
+    if [ "${http_code}" = "200" ] || [ "${http_code}" = "204" ]; then
+        log_success "Application deleted successfully from APIM"
+        log_info "Associated OAuth2 client also removed from Key Manager"
         return 0
     else
         log_error "Failed to delete application (HTTP ${http_code})"
@@ -1740,86 +1603,123 @@ show_help() {
 
 ╔══════════════════════════════════════════════════════════════╗
 ║           WSO2 Complete Toolkit - ONE FILE                   ║
+║         Uses APIM DevPortal API for App Management          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 Usage: ./wso2-toolkit.sh <command> [options]
 
 COMMANDS:
+
+  Infrastructure & Health:
+  ========================
   health              Check health of all services
-  
+
+  Key Manager Setup:
+  ==================
   setup-km            Setup WSO2IS as Key Manager (use well-known endpoint)
   list-km             List all Key Managers
   disable-resident-km Disable Resident Key Manager (after adding WSO2IS)
-  
+
+  Certificate Management:
+  =======================
   check-mtls          Check MTLS certificate trust (APIM ↔ IS)
   fix-mtls            Fix MTLS certificate trust automatically
   check-ssa-jwks      Check SSA JWKS endpoint for DCR
-  
   fix-ssl-trust       Fix SSL certificate trust (legacy, use fix-mtls)
   test                Test Key Manager integration
-  
-  list-apps           List all OAuth2 applications
-  create-app          Create OAuth2/OIDC application
+
+  Application Management (APIM DevPortal):
+  =========================================
+  list-apps           List all applications from APIM DevPortal
+  create-app          Create application via APIM (2-step: app + keys)
+                      Usage: create-app <name> [callback] [key_manager]
   get-app             Get application details by ID
-  get-credentials     Get OAuth2 client ID & secret (by name or ID)
-  delete-app          Delete application by ID
-  
+  get-app-keys        Get OAuth2 credentials for application
+                      Usage: get-app-keys <app_id> [PRODUCTION|SANDBOX]
+  delete-app          Delete application by ID (removes from APIM & KM)
+
+  Role Management (WSO2 IS):
+  ==========================
   list-roles          List all roles
   create-role         Create a single role
   create-roles        Create default roles (ops_users, finance, auditor, user, app_admin)
   delete-role         Delete a role by ID
-  
-  get-token <type>    Get OAuth2 token
+
+  Token Generation:
+  =================
+  get-token <type>    Get OAuth2 token for various grant types
 
 GRANT TYPES:
-  client_credentials  Client Credentials Grant
-  password            Resource Owner Password Grant
-  refresh             Refresh Token Grant
-  code                Authorization Code Grant
-  device              Device Authorization Grant
-  jwt                 JWT Bearer Grant
-  saml                SAML 2.0 Bearer Grant
-  token-exchange      Token Exchange Grant
+  client_credentials (cc)  Client Credentials Grant
+  password (pw)            Resource Owner Password Grant
+  refresh (rt)             Refresh Token Grant
+  code (ac)                Authorization Code Grant
+  device (dc)              Device Authorization Grant
+  jwt (jb)                 JWT Bearer Grant
+  saml (sb)                SAML 2.0 Bearer Grant
+  token-exchange (te)      Token Exchange Grant
 
 EXAMPLES:
-  # Check infrastructure
+
+  Infrastructure Setup:
+  ---------------------
+  # Check all services
   ./wso2-toolkit.sh health
 
-  # Setup Key Manager
+  # Setup WSO2 IS as Key Manager
   ./wso2-toolkit.sh setup-km
 
-  # List configured Key Managers
+  # List Key Managers
   ./wso2-toolkit.sh list-km
 
-  # List OAuth2 applications
+  Application Management (APIM DevPortal):
+  ----------------------------------------
+  # List all applications from APIM
   ./wso2-toolkit.sh list-apps
 
-  # Create OAuth2 application with all grant types
+  # Create application via APIM DevPortal (auto-registers with WSO2IS KM)
   ./wso2-toolkit.sh create-app MyApp http://localhost:8080/callback
+
+  # Create app with specific Key Manager
+  ./wso2-toolkit.sh create-app MyApp http://localhost:8080/callback WSO2IS
 
   # Get application details
   ./wso2-toolkit.sh get-app <application-id>
 
-  # Get OAuth2 credentials (for porting to new system)
-  ./wso2-toolkit.sh get-credentials TestApp
+  # Get OAuth2 credentials
+  ./wso2-toolkit.sh get-app-keys <application-id> PRODUCTION
 
-  # Create default roles (ops_users, finance, auditor, user, app_admin)
+  # Delete application (removes from APIM and Key Manager)
+  ./wso2-toolkit.sh delete-app <application-id>
+
+  Role Management:
+  ----------------
+  # Create default roles
   ./wso2-toolkit.sh create-roles
 
-  # Create a single role
+  # Create single role
   ./wso2-toolkit.sh create-role custom_role
 
   # List all roles
   ./wso2-toolkit.sh list-roles
 
-  # Get token with client credentials
+  Token Generation:
+  -----------------
+  # Client Credentials grant
   ./wso2-toolkit.sh get-token cc myClientId mySecret
 
-  # Get token with password grant
+  # Password grant
   ./wso2-toolkit.sh get-token password myClientId mySecret admin admin
 
-  # Delete application
-  ./wso2-toolkit.sh delete-app <application-id>
+  # Refresh token
+  ./wso2-toolkit.sh get-token refresh myClientId mySecret <refresh_token>
+
+IMPORTANT NOTES:
+  • Applications are now created via APIM DevPortal API
+  • APIM automatically registers OAuth2 clients with configured Key Manager
+  • All application management flows through APIM (not direct WSO2 IS access)
+  • Keys are generated during app creation with proper grant type support
+  • Token generation uses WSO2 IS OAuth2 endpoints
 
 HELP
 }
@@ -1867,9 +1767,9 @@ case "${COMMAND}" in
         shift
         cmd_get_app "$@"
         ;;
-    get-credentials)
+    get-app-keys)
         shift
-        cmd_get_credentials "$@"
+        cmd_get_app_keys "$@"
         ;;
     delete-app)
         shift

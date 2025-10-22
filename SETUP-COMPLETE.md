@@ -822,3 +822,423 @@ All improvements verified with:
 **Quality:** Production-ready ✅
 
 **This toolkit is now a robust, enterprise-grade ops console for WSO2 APIM ↔ IS integration.** 🚀
+
+
+# WSO2 Toolkit - Quick Start Guide
+
+## Prerequisites
+```bash
+# Install dependencies
+sudo apt-get install jq curl docker.io python3
+
+# Verify installations
+jq --version
+curl --version
+docker --version
+python3 --version
+```
+
+## Setup Workflow
+
+### Step 1: Check Infrastructure
+```bash
+./scripts/wso2-toolkit.sh health
+```
+
+**Expected Output:**
+- ✓ Docker containers running (wso2am, wso2is, postgres)
+- ✓ Databases accessible
+- ✓ WSO2 IS accessible
+- ✓ WSO2 AM accessible
+
+### Step 2: Setup Key Manager
+```bash
+# Add WSO2 IS as Key Manager in APIM
+./scripts/wso2-toolkit.sh setup-km
+
+# Verify Key Manager is configured
+./scripts/wso2-toolkit.sh list-km
+```
+
+**Expected Output:**
+```json
+{
+  "name": "WSO2IS",
+  "type": "WSO2-IS",
+  "enabled": true,
+  "tokenEndpoint": "https://wso2is:9443/oauth2/token"
+}
+```
+
+### Step 3: (Optional) Disable Resident Key Manager
+```bash
+# Disable built-in Key Manager to use only WSO2 IS
+./scripts/wso2-toolkit.sh disable-resident-km
+```
+
+### Step 4: Fix SSL Certificates (if needed)
+```bash
+# Check certificate trust
+./scripts/wso2-toolkit.sh check-mtls
+
+# Fix if issues found
+./scripts/wso2-toolkit.sh fix-mtls
+
+# Restart containers
+docker restart wso2am wso2is
+```
+
+## Application Management
+
+### Create Application
+```bash
+# Basic usage
+./scripts/wso2-toolkit.sh create-app MyApp http://localhost:8080/callback
+
+# With specific Key Manager
+./scripts/wso2-toolkit.sh create-app MyApp http://localhost:8080/callback WSO2IS
+```
+
+**Output:**
+```
+╔══════════════════════════════════════════════════════════╗
+║  SAVE THESE CREDENTIALS - THEY WON'T BE SHOWN AGAIN     ║
+╚══════════════════════════════════════════════════════════╝
+
+Application Name: MyApp
+Application ID:   abc-123-def-456
+Client ID:        xYzAbC123
+Client Secret:    secret_XyZ789
+Callback URL:     http://localhost:8080/callback
+Key Manager:      WSO2IS
+
+Grant Types Enabled:
+  ✓ Client Credentials
+  ✓ Password
+  ✓ Authorization Code
+  ✓ Refresh Token
+  ✓ Implicit
+  ✓ Device Code
+  ✓ JWT Bearer
+  ✓ SAML2 Bearer
+  ✓ Token Exchange
+```
+
+### List Applications
+```bash
+./scripts/wso2-toolkit.sh list-apps
+```
+
+### Get Application Keys
+```bash
+# Get PRODUCTION keys
+./scripts/wso2-toolkit.sh get-app-keys <app-id> PRODUCTION
+
+# Get SANDBOX keys
+./scripts/wso2-toolkit.sh get-app-keys <app-id> SANDBOX
+```
+
+### Delete Application
+```bash
+./scripts/wso2-toolkit.sh delete-app <app-id>
+```
+
+## Role Management
+
+### Create Default Roles
+```bash
+# Creates: ops_users, finance, auditor, user, app_admin
+./scripts/wso2-toolkit.sh create-roles
+```
+
+### Create Single Role
+```bash
+# Application role
+./scripts/wso2-toolkit.sh create-role custom_role application
+
+# Internal role
+./scripts/wso2-toolkit.sh create-role internal_role internal
+
+# Organization role
+./scripts/wso2-toolkit.sh create-role org_role organization
+```
+
+### List Roles
+```bash
+./scripts/wso2-toolkit.sh list-roles
+```
+
+## Token Generation
+
+### Client Credentials Grant
+```bash
+./scripts/wso2-toolkit.sh get-token cc <client-id> <client-secret>
+```
+
+**Example:**
+```bash
+./scripts/wso2-toolkit.sh get-token cc xYzAbC123 secret_XyZ789
+```
+
+**Output:**
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIs...",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+### Password Grant
+```bash
+./scripts/wso2-toolkit.sh get-token password <client-id> <client-secret> <username> <password>
+```
+
+**Example:**
+```bash
+./scripts/wso2-toolkit.sh get-token password xYzAbC123 secret_XyZ789 admin admin
+```
+
+### Refresh Token Grant
+```bash
+./scripts/wso2-toolkit.sh get-token refresh <client-id> <client-secret> <refresh-token>
+```
+
+### Authorization Code Grant
+```bash
+# Step 1: Get authorization code (via browser)
+# Visit: https://localhost:9444/oauth2/authorize?response_type=code&client_id=<client-id>&redirect_uri=<callback-url>
+
+# Step 2: Exchange code for token
+./scripts/wso2-toolkit.sh get-token code <client-id> <client-secret> <auth-code> <redirect-uri>
+```
+
+## Common Workflows
+
+### Workflow 1: Complete Setup
+```bash
+# 1. Check health
+./scripts/wso2-toolkit.sh health
+
+# 2. Setup Key Manager
+./scripts/wso2-toolkit.sh setup-km
+
+# 3. Create roles
+./scripts/wso2-toolkit.sh create-roles
+
+# 4. Create application
+./scripts/wso2-toolkit.sh create-app MyApp http://localhost:8080/callback
+
+# 5. Test token generation (use credentials from step 4)
+./scripts/wso2-toolkit.sh get-token cc <client-id> <client-secret>
+```
+
+### Workflow 2: Troubleshooting
+```bash
+# Check infrastructure
+./scripts/wso2-toolkit.sh health
+
+# Check Key Managers
+./scripts/wso2-toolkit.sh list-km
+
+# Check MTLS certificates
+./scripts/wso2-toolkit.sh check-mtls
+
+# Fix certificate issues
+./scripts/wso2-toolkit.sh fix-mtls
+
+# Test Key Manager integration
+./scripts/wso2-toolkit.sh test
+```
+
+### Workflow 3: Application Migration
+```bash
+# 1. List existing applications
+./scripts/wso2-toolkit.sh list-apps
+
+# 2. Get keys for existing app
+./scripts/wso2-toolkit.sh get-app-keys <app-id>
+
+# 3. Save credentials to .env file (output will show format)
+
+# 4. Test tokens work
+./scripts/wso2-toolkit.sh get-token cc <client-id> <client-secret>
+```
+
+## Testing API Calls
+
+### Using curl with Access Token
+```bash
+# Get token
+TOKEN=$(./scripts/wso2-toolkit.sh get-token cc <client-id> <client-secret> | jq -r '.access_token')
+
+# Call protected API
+curl -H "Authorization: Bearer $TOKEN" \
+     https://localhost:8243/your-api/1.0.0/endpoint
+```
+
+### Using Postman
+1. Get Client ID and Secret from `create-app` command
+2. Configure OAuth 2.0 in Postman:
+   - Grant Type: Client Credentials
+   - Access Token URL: `https://localhost:9444/oauth2/token`
+   - Client ID: `<your-client-id>`
+   - Client Secret: `<your-client-secret>`
+3. Request Token
+4. Use token in API requests
+
+## Environment Variables
+
+### Optional Configuration
+```bash
+# APIM Configuration
+export APIM_HOST=localhost
+export APIM_PORT=9443
+export APIM_ADMIN_USER=admin
+export APIM_ADMIN_PASS=admin
+
+# WSO2 IS Configuration
+export WSO2IS_HOST=wso2is
+export WSO2IS_PORT=9443
+export WSO2IS_EXTERNAL_PORT=9444
+export WSO2IS_ADMIN_USER=admin
+export WSO2IS_ADMIN_PASS=admin
+```
+
+## Access URLs
+
+### WSO2 API Manager
+- **Publisher Portal:** https://localhost:9443/publisher
+- **DevPortal:** https://localhost:9443/devportal
+- **Admin Portal:** https://localhost:9443/admin
+- **Carbon Console:** https://localhost:9443/carbon
+- **Gateway:** https://localhost:8243
+
+### WSO2 Identity Server
+- **Console:** https://localhost:9444/console
+- **Carbon Console:** https://localhost:9444/carbon
+- **My Account:** https://localhost:9444/myaccount
+
+### Default Credentials
+- **Username:** admin
+- **Password:** admin
+
+## Cheat Sheet
+
+```bash
+# Health & Setup
+./scripts/wso2-toolkit.sh health
+./scripts/wso2-toolkit.sh setup-km
+./scripts/wso2-toolkit.sh list-km
+
+# Applications (APIM DevPortal)
+./scripts/wso2-toolkit.sh list-apps
+./scripts/wso2-toolkit.sh create-app <name> <callback>
+./scripts/wso2-toolkit.sh get-app <app-id>
+./scripts/wso2-toolkit.sh get-app-keys <app-id>
+./scripts/wso2-toolkit.sh delete-app <app-id>
+
+# Roles (WSO2 IS)
+./scripts/wso2-toolkit.sh list-roles
+./scripts/wso2-toolkit.sh create-role <name>
+./scripts/wso2-toolkit.sh create-roles
+
+# Tokens
+./scripts/wso2-toolkit.sh get-token cc <id> <secret>
+./scripts/wso2-toolkit.sh get-token password <id> <secret> <user> <pass>
+
+# Certificates
+./scripts/wso2-toolkit.sh check-mtls
+./scripts/wso2-toolkit.sh fix-mtls
+
+# Help
+./scripts/wso2-toolkit.sh help
+```
+
+## Troubleshooting Common Issues
+
+### Issue: "Container not running"
+```bash
+# Check containers
+docker ps
+
+# Start containers
+docker compose up -d
+
+# Check logs
+docker logs wso2am --tail 50
+docker logs wso2is --tail 50
+```
+
+### Issue: "Connection refused"
+```bash
+# Wait for services to start (can take 2-3 minutes)
+./scripts/wso2-toolkit.sh health
+
+# Check if ports are open
+curl -k https://localhost:9443/carbon/admin/login.jsp
+curl -k https://localhost:9444/carbon/admin/login.jsp
+```
+
+### Issue: "Invalid credentials"
+```bash
+# Verify admin credentials
+export APIM_ADMIN_USER=admin
+export APIM_ADMIN_PASS=admin
+export WSO2IS_ADMIN_USER=admin
+export WSO2IS_ADMIN_PASS=admin
+```
+
+### Issue: "Key Manager not found"
+```bash
+# List Key Managers
+./scripts/wso2-toolkit.sh list-km
+
+# If WSO2IS not in list, set it up
+./scripts/wso2-toolkit.sh setup-km
+```
+
+### Issue: "SSL certificate error"
+```bash
+# Check certificate trust
+./scripts/wso2-toolkit.sh check-mtls
+
+# Fix certificates
+./scripts/wso2-toolkit.sh fix-mtls
+
+# Restart containers
+docker restart wso2am wso2is
+```
+
+## Best Practices
+
+1. **Always run health check first**
+   ```bash
+   ./scripts/wso2-toolkit.sh health
+   ```
+
+2. **Save application credentials immediately**
+   - They are only shown once during creation
+
+3. **Use environment-specific callback URLs**
+   - Dev: `http://localhost:8080/callback`
+   - Production: `https://yourdomain.com/callback`
+
+4. **Test tokens before using in production**
+   ```bash
+   ./scripts/wso2-toolkit.sh get-token cc <id> <secret>
+   ```
+
+5. **Back up Key Manager configuration**
+   ```bash
+   ./scripts/wso2-toolkit.sh list-km > key-managers-backup.json
+   ```
+
+## Next Steps
+
+1. Read full documentation: `./scripts/wso2-toolkit.sh help`
+2. Review changes: `cat TOOLKIT_CHANGES.md`
+3. Test application flow: Follow "Workflow 1: Complete Setup"
+4. Access APIM DevPortal: https://localhost:9443/devportal
+5. Verify application appears in DevPortal UI
+
